@@ -47,7 +47,9 @@ freeVars :: T -> [Label]
 freeVars (Val (Var x)) = [x]
 freeVars (Val (L x tp t1)) = res \\ [x] 
         where res = [] ++ freeVars t1
+freeVars (Val _) = []
 freeVars (App t1 t2) = freeVars t1 `union` freeVars t2
+freeVars (Let x t1 t2) = freeVars t1 `union` freeVars t2
 
 relabel :: T -> Label -> Label -> T 
 relabel (Val (Var x)) v1 v2
@@ -65,6 +67,11 @@ sub_util :: [Label] -> [Label]
 sub_util exg_labels = all_labels \\ exg_labels
 
 sub :: T -> Label -> T -> T 
+sub (Succ n) x s        = Succ (sub n x s)
+sub (Pred n) x s        = Pred (sub n x s)
+sub (IsZero n) x s      = IsZero (sub n x s)
+sub (If t1 t2 t3) x s   = If (sub t1 x s) (sub t2 x s) (sub t3 x s)
+
 sub (Val (Var v)) x s
         |x == v          = s
         |otherwise       = Val (Var v)
@@ -75,13 +82,16 @@ sub (Val (L y tp t1)) x s
         |otherwise                          = sub (relabel ((Val (L y tp t1))) y (head avl_labels)) x s
         where avl_labels = sub_util ([x] `union` (freeVars s) `union` (freeVars t1))
 
+sub (Val v) x s = Val v
+
 sub (App t1 t2) x s = App (sub t1 x s) (sub t2 x s)
 
 isNF :: T -> Bool 
-isNF (Val (Var x)) = True
 isNF (Val (L x tp t1)) = isNF t1
+isNF (Val _) = True
 isNF (App (Val (L x tp t1)) _) = False
 isNF (App t1 t2) = isNF t1 && isNF t2
+isNF _ = True
 
 ssos :: (T, Mu) -> (T, Mu)
 ssos ((Val (L y tp t1)), mu) = ((Val (L y tp (fst (ssos (t1, mu))))), mu)
@@ -174,9 +184,8 @@ typeCheck gm (Val (L x tp t2))
         | t2_type /= Nothing && inGamma     = Just (Arrow tp (fromJust t2_type))
         | otherwise     = Nothing
         where
-            gm' = gm++[(x, tp)]
-            t2_type = typeCheck gm' t2
-            inGamma = ltInGamma gm' (x, tp)
+            t2_type = typeCheck gm t2
+            inGamma = ltInGamma gm (x, tp)
 
 typeCheck gm (App t1 t2) = tcApp t1_type t2_type
         where
@@ -209,11 +218,17 @@ eval t1
     where 
         t1' = trace ("  |> " ++show t1++"\n  |> memory = " ++show mu++"\n") (fst (ssos (t1, mu)))
 
+buildGamma :: T -> Gamma
+buildGamma (Val (L x tp t1)) = [(x, tp)]++buildGamma t1
+buildGamma (App t1 t2) = buildGamma t1 `union` buildGamma t2
+buildGamma (Let x t1 t2) = buildGamma t1 `union` buildGamma t2
+buildGamma _ = []
+
 run :: T -> T
 run t1
     | t1_type /= Nothing    = trace ("Expression Typechecks as : "++show (fromJust t1_type)++"\n") (eval t1)
     | otherwise             = error "Error! Typechecking Failed!"
     where
-        t1_type = typeCheck gm t1
+        t1_type = typeCheck (buildGamma t1) t1
 
 
