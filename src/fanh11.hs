@@ -37,9 +37,6 @@ type Gamma = [(Label, Type)]
 
 type Mu = [(Loc, V)]
 
-gm :: Gamma
-gm = []
-
 mu :: Mu
 mu = []
 
@@ -62,6 +59,9 @@ relabel (App t1 t2) v1 v2 = App (relabel t1 v1 v2) (relabel t2 v1 v2)
 
 all_labels :: [Label]
 all_labels = [A, C, D, E, F, G, H, I, J, K, M, O, P, Q, R, S, U, W, X, Y]
+
+all_locs :: [Loc]
+all_locs = [L0, L1, L2, L3, L4, L5, L6, L7, L8, L9]
 
 sub_util :: [Label] -> [Label]
 sub_util exg_labels = all_labels \\ exg_labels
@@ -86,12 +86,46 @@ sub (Val v) x s = Val v
 
 sub (App t1 t2) x s = App (sub t1 x s) (sub t2 x s)
 
+sub (Seq t1 t2) x s = Seq (sub t1 x s) (sub t2 x s)
+
+sub (Assign t1 t2) x s = Assign (sub t1 x s) (sub t2 x s)
+
+sub (DeRef t1) x s = DeRef (sub t1 x s)
+
 isNF :: T -> Bool 
+isNF (If _ _ _) = False
+isNF (Succ t1) = isNF t1
+isNF (Pred t1) = isNF t1
+isNF (IsZero t1) = isNF t1
 isNF (Val (L x tp t1)) = isNF t1
 isNF (Val _) = True
 isNF (App (Val (L x tp t1)) _) = False
 isNF (App t1 t2) = isNF t1 && isNF t2
-isNF _ = True
+isNF (Let x t1 t2) = False
+isNF (Alloc _) = False
+isNF (Seq _ _) = False
+isNF (DeRef _) = False
+isNF (Assign _ _) = False
+
+
+locsInMu :: Mu -> [Loc]
+locsInMu mu
+        | null mu       = []
+        | otherwise     = [fst (head mu)]++(locsInMu (tail mu))
+
+getVal :: Mu -> Loc -> Maybe V
+getVal mu l
+        | null mu               = Nothing
+        | fst lv_pair == l      = Just (snd lv_pair)
+        | otherwise             = getVal (tail mu) l
+        where
+            lv_pair = head mu
+
+assignVal :: Mu -> Loc -> V -> Mu
+assignVal [] _ _ = []
+assignVal (x:xs) l v
+        | fst x == l            = (l, v):xs
+        | otherwise             = x:assignVal xs l v
 
 ssos :: (T, Mu) -> (T, Mu)
 ssos ((Val (L y tp t1)), mu) = ((Val (L y tp (fst (ssos (t1, mu))))), mu)
@@ -127,7 +161,20 @@ ssos ((Let x t1 t2), mu)
 ssos ((Seq (Val UnitV) t2), mu) = (t2, mu)
 ssos ((Seq t1 t2), mu) = ((Seq (fst (ssos (t1, mu))) t2), mu)
 
+ssos ((Alloc (Val v)), mu) = (Val (Location newLoc), mu++[(newLoc, v)])
+        where
+            newLoc = head (all_locs \\ (locsInMu mu))
+ssos ((Alloc t1), mu) = ((Alloc (fst (ssos (t1, mu)))), mu)
 
+ssos ((DeRef (Val (Location l))), mu) = ((Val (fromJust (getVal mu l))), mu)
+ssos ((DeRef t1), mu) = ((DeRef (fst (ssos (t1, mu)))), mu)
+
+ssos ((Assign (Val (Location l)) (Val v)), mu) = ((Val UnitV), (assignVal mu l v))
+ssos ((Assign t1 t2), mu)
+        | not (isNF t1)         = ((Assign (fst (ssos (t1, mu))) t2), mu)
+        | not (isNF t2)         = ((Assign t1 (fst (ssos (t2, mu)))), mu)
+        | otherwise             = ((Assign t1 t2), mu) 
+        
 getType :: Gamma -> Label -> Maybe (Label, Type)
 getType gm x
     | null gm               = Nothing
@@ -143,10 +190,20 @@ ltInGamma gm (x, tp)
         lt_pair = head gm
 
 tcApp :: Maybe Type -> Maybe Type -> Maybe Type
-tcApp (Just (Arrow tp11 tp12)) (Just t21)
-    | t21 == tp11       = Just tp12
+tcApp (Just (Arrow tp11 tp12)) (Just tp21)
+    | tp21 == tp11       = Just tp12
     | otherwise         = Nothing
 tcApp _ _       = Nothing 
+
+tcDeRef :: Maybe Type -> Maybe Type
+tcDeRef (Just (Ref tp)) = Just tp
+tcDeRef _ = Nothing
+
+tcAssign :: Maybe Type -> Maybe Type -> Maybe Type
+tcAssign (Just (Ref tp1)) (Just tp2)
+    | tp2 == tp1        = Just Unit
+    | otherwise         = Nothing
+tcAssign _ _       = Nothing 
 
 typeCheck :: Gamma -> T -> Maybe Type
 typeCheck gm (Val Tru) = Just BOOL
@@ -176,7 +233,7 @@ typeCheck gm (IsZero t)
         | otherwise     = Nothing
 
 typeCheck gm (Val (Var x))
-        | lt_pair /= Nothing        = Just (snd (fromJust lt_pair))
+        | lt_pair /= Nothing                = Just (snd (fromJust lt_pair))
         | otherwise      = Nothing
         where lt_pair = getType gm x
 
@@ -210,13 +267,34 @@ typeCheck gm (Seq t1 t2)
             t1_type = typeCheck gm t1
             t2_type = typeCheck gm t2
 
+typeCheck gm (Alloc t1)
+        | t1_type /= Nothing    = Just (Ref (fromJust t1_type))
+        | otherwise             = Nothing
+        where
+            t1_type     = typeCheck gm t1
+
+typeCheck gm (DeRef t1) = tcDeRef t1_type
+        where
+            t1_type = typeCheck gm t1
+
+typeCheck gm (Assign t1 t2) = tcAssign t1_type t2_type
+        where
+            t1_type = typeCheck gm t1
+            t2_type = typeCheck gm t2
+
+eval_util :: (T, Mu) -> (T, Mu)
+eval_util (t, mu)
+        | fst tmu_pair == t     = tmu_pair
+        | otherwise             = eval_util tmu_pair
+        where
+            tmu_pair =  trace ("  |> " ++show t++"\n  |> memory = " ++show mu++"\n") (ssos (t, mu))
 
 eval :: T -> T 
-eval t1
-    | t1' == t1     = t1
-    | otherwise     = eval t1'
-    where 
-        t1' = trace ("  |> " ++show t1++"\n  |> memory = " ++show mu++"\n") (fst (ssos (t1, mu)))
+eval t = fst (eval_util (t, mu))
+
+letAllocGamma :: T -> Gamma -> Gamma
+letAllocGamma (Let x (Alloc t) t2) gm = gm++[(x, Ref (fromJust (typeCheck gm t)))]
+letAllocGamma _ gm = gm
 
 buildGamma :: T -> Gamma
 buildGamma (Val (L x tp t1)) = [(x, tp)]++buildGamma t1
@@ -225,10 +303,12 @@ buildGamma (Let x t1 t2) = buildGamma t1 `union` buildGamma t2
 buildGamma _ = []
 
 run :: T -> T
-run t1
-    | t1_type /= Nothing    = trace ("Expression Typechecks as : "++show (fromJust t1_type)++"\n") (eval t1)
+run t
+    | t_type /= Nothing    = trace ("Expression Typechecks as : "++show (fromJust t_type)++"\n") (eval t)
     | otherwise             = error "Error! Typechecking Failed!"
     where
-        t1_type = typeCheck (buildGamma t1) t1
+        gm = buildGamma t
+        gm' = letAllocGamma t gm
+        t_type = typeCheck gm' t
 
 

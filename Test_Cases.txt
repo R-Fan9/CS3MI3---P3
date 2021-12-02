@@ -256,6 +256,26 @@ Expression Typechecks as : Unit
 Val UnitV
 
 -------------------------------------------
+// Let Binding
+
+*Main> x = (Let Q (Let F (Val Z) (Val (L F NAT (Val (Var F))))) (Val (L Q (Arrow NAT NAT) (Val Z))))      
+*Main> run x
+[(F,NAT),(Q,Arrow NAT NAT)]
+Expression Typechecks as : Arrow (Arrow NAT NAT) NAT
+
+  |> Let Q (Let F (Val Z) (Val (L F NAT (Val (Var F))))) (Val (L Q (Arrow NAT NAT) (Val Z)))
+  |> memory = []
+
+  |> Let Q (Val (L F NAT (Val (Var F)))) (Val (L Q (Arrow NAT NAT) (Val Z)))
+  |> memory = []
+
+  |> Val (L Q (Arrow NAT NAT) (Val Z))
+  |> memory = []
+
+Val (L Q (Arrow NAT NAT) (Val Z))
+
+-------------------------------------------------
+
 // Single Sequencing
 
 *Main> x = (Seq (Val UnitV) (IsZero (Val Z)))
