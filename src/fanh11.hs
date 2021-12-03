@@ -41,12 +41,19 @@ mu :: Mu
 mu = []
 
 freeVars :: T -> [Label] 
+freeVars (Succ t1) = freeVars t1
+freeVars (Pred t1) = freeVars t1
+freeVars (IsZero t1) = freeVars t1
 freeVars (Val (Var x)) = [x]
 freeVars (Val (L x tp t1)) = res \\ [x] 
-        where res = [] ++ freeVars t1
+        where res = [] `union` freeVars t1
 freeVars (Val _) = []
 freeVars (App t1 t2) = freeVars t1 `union` freeVars t2
 freeVars (Let x t1 t2) = freeVars t1 `union` freeVars t2
+freeVars (Seq t1 t2) = freeVars t1 `union` freeVars t2
+freeVars (Assign t1 t2) = freeVars t1 `union` freeVars t2
+freeVars (DeRef t1) = freeVars t1
+
 
 relabel :: T -> Label -> Label -> T 
 relabel (Val (Var x)) v1 v2
@@ -94,8 +101,8 @@ sub (DeRef t1) x s = DeRef (sub t1 x s)
 
 isNF :: T -> Bool 
 isNF (If _ _ _) = False
-isNF (Succ t1) = isNF t1
-isNF (Pred t1) = isNF t1
+isNF (Succ _) = False
+isNF (Pred _) = False
 isNF (IsZero t1) = isNF t1
 isNF (Val (L x tp t1)) = isNF t1
 isNF (Val _) = True
@@ -113,67 +120,125 @@ locsInMu mu
         | null mu       = []
         | otherwise     = [fst (head mu)]++(locsInMu (tail mu))
 
-getVal :: Mu -> Loc -> Maybe V
-getVal mu l
+getValFromMu :: Mu -> Loc -> Maybe V
+getValFromMu mu l
         | null mu               = Nothing
         | fst lv_pair == l      = Just (snd lv_pair)
-        | otherwise             = getVal (tail mu) l
+        | otherwise             = getValFromMu (tail mu) l
         where
             lv_pair = head mu
 
-assignVal :: Mu -> Loc -> V -> Mu
+assignVal :: Mu -> Loc -> T -> Mu
 assignVal [] _ _ = []
-assignVal (x:xs) l v
+assignVal (x:xs) l (Val v)
         | fst x == l            = (l, v):xs
-        | otherwise             = x:assignVal xs l v
+        | otherwise             = x:assignVal xs l (Val v)
 
 ssos :: (T, Mu) -> (T, Mu)
-ssos ((Val (L y tp t1)), mu) = ((Val (L y tp (fst (ssos (t1, mu))))), mu)
+ssos ((Val (L y tp t1)), mu) = ((Val (L y tp t1')), mu')
+        where
+            res = ssos (t1, mu)
+            t1' = fst res
+            mu' = snd res
+
 ssos (Val v, mu) = (Val v, mu)
 
 ssos ((If (Val Tru) t2 t3), mu) = (t2, mu)
 ssos ((If (Val Fls) t2 t3), mu) = (t3, mu)
-ssos ((If t1 t2 t3), mu) = ((If (fst (ssos (t1, mu))) t2 t3), mu)
+ssos ((If t1 t2 t3), mu) = ((If t1' t2 t3), mu')
+        where
+            res = ssos (t1, mu)
+            t1' = fst res
+            mu' = snd res
 
 ssos ((Succ (Val nv)), mu) = ((Val (SuccNV nv)), mu)
-ssos ((Succ t1), mu) = (Succ (fst (ssos (t1, mu))), mu)
+ssos ((Succ t1), mu) = (Succ t1', mu')
+        where
+           res = ssos (t1, mu)
+           t1' = fst res
+           mu' = snd res
 
 ssos ((Pred (Val Z)), mu) = (Val Z, mu)
 ssos ((Pred (Val (SuccNV nv))), mu) = ((Val nv), mu)
-ssos ((Pred t1), mu) = (Pred (fst (ssos (t1, mu))), mu)
+ssos ((Pred t1), mu) = (Pred t1', mu')
+        where
+            res = ssos (t1, mu)
+            t1' = fst res
+            mu' = snd res
 
 ssos ((IsZero (Val Z)), mu) = (Val Tru, mu)
 ssos ((IsZero (Val (SuccNV nv))), mu) = (Val Fls, mu)
-ssos ((IsZero t1), mu) = (IsZero (fst (ssos (t1, mu))), mu)
+ssos ((IsZero t1), mu) = (IsZero t1', mu')
+        where
+            res = ssos (t1, mu)
+            t1' = fst res
+            mu' = snd res
 
 ssos ((App (Val (L x tp t1)) t2), mu)
-        | not (isNF t2)      = ((App (Val (L x tp t1)) (fst (ssos (t2, mu)))), mu)
+        | not (isNF t2)      = ((App (Val (L x tp t1)) t2'), mu')
         | otherwise          = ((sub t1 x t2), mu)
+        where
+            res = ssos (t2, mu)
+            t2' = fst res
+            mu' = snd res
+
 ssos ((App t1 t2), mu)
-        | not (isNF t1)      = ((App (fst (ssos (t1, mu))) t2), mu)
-        | not (isNF t2)      = ((App t1 (fst (ssos (t2,mu)))), mu)
+        | not (isNF t1)      = ((App t1' t2), mu1')
+        | not (isNF t2)      = ((App t1 t2'), mu2')
         | otherwise          = ((App t1 t2), mu)
+        where
+          res1 = ssos (t1, mu)
+          t1' = fst res1
+          mu1' = snd res1
+          res2 = ssos (t2, mu)
+          t2' = fst res2
+          mu2' = snd res2
 
 ssos ((Let x t1 t2), mu)
-        | not (isNF t1)      = ((Let x (fst (ssos (t1, mu))) t2), mu)
+        | not (isNF t1)      = ((Let x t1' t2), mu')
         | otherwise          = ((sub t2 x t1), mu)
+        where
+            res = ssos (t1, mu)
+            t1' = fst res
+            mu' = snd res
 
 ssos ((Seq (Val UnitV) t2), mu) = (t2, mu)
-ssos ((Seq t1 t2), mu) = ((Seq (fst (ssos (t1, mu))) t2), mu)
+ssos ((Seq t1 t2), mu) = ((Seq t1' t2), mu')
+        where
+            res = ssos (t1, mu)
+            t1' = fst res
+            mu' = snd res
 
-ssos ((Alloc (Val v)), mu) = (Val (Location newLoc), mu++[(newLoc, v)])
+ssos ((Alloc (Val v)), mu) = (Val (Location newLoc), mu++[(newLoc, v)]) 
         where
             newLoc = head (all_locs \\ (locsInMu mu))
 ssos ((Alloc t1), mu) = ((Alloc (fst (ssos (t1, mu)))), mu)
 
-ssos ((DeRef (Val (Location l))), mu) = ((Val (fromJust (getVal mu l))), mu)
-ssos ((DeRef t1), mu) = ((DeRef (fst (ssos (t1, mu)))), mu)
+ssos ((DeRef (Val (Location l))), mu) = ((Val (fromJust (getValFromMu mu l))), mu)
+ssos ((DeRef t1), mu) = ((DeRef t1'), mu')
+        where
+            res = ssos (t1, mu)
+            t1' = fst res
+            mu' = snd res
 
-ssos ((Assign (Val (Location l)) (Val v)), mu) = ((Val UnitV), (assignVal mu l v))
+ssos ((Assign (Val (Location l)) t2), mu) 
+        | not (isNF t2)         = ((Assign (Val (Location l)) t2'), mu') 
+        | otherwise             = ((Val UnitV), (assignVal mu l t2))
+        where
+            res = ssos (t2, mu)
+            t2' = fst res
+            mu' = snd res
 ssos ((Assign t1 t2), mu)
-        | not (isNF t1)         = ((Assign (fst (ssos (t1, mu))) t2), mu)
-        | not (isNF t2)         = ((Assign t1 (fst (ssos (t2, mu)))), mu)
+        | not (isNF t1)         = ((Assign t1' t2), mu1')
+        | not (isNF t2)         = ((Assign t1 t2'), mu2')
         | otherwise             = ((Assign t1 t2), mu) 
+        where
+            res1 = ssos (t1, mu)
+            t1' = fst res1
+            mu1' = snd res1
+            res2 = ssos (t2, mu)
+            t2' = fst res2
+            mu2' = snd res2
         
 getType :: Gamma -> Label -> Maybe (Label, Type)
 getType gm x
@@ -196,7 +261,7 @@ tcApp (Just (Arrow tp11 tp12)) (Just tp21)
 tcApp _ _       = Nothing 
 
 tcDeRef :: Maybe Type -> Maybe Type
-tcDeRef (Just (Ref tp)) = Just tp
+tcDeRef (Just (Ref tp)) = trace (show tp) (Just tp)
 tcDeRef _ = Nothing
 
 tcAssign :: Maybe Type -> Maybe Type -> Maybe Type
@@ -300,6 +365,8 @@ buildGamma :: T -> Gamma
 buildGamma (Val (L x tp t1)) = [(x, tp)]++buildGamma t1
 buildGamma (App t1 t2) = buildGamma t1 `union` buildGamma t2
 buildGamma (Let x t1 t2) = buildGamma t1 `union` buildGamma t2
+buildGamma (Seq t1 t2) = buildGamma t1 `union` buildGamma t2
+buildGamma (Assign t1 t2) = buildGamma t1 `union` buildGamma t2
 buildGamma _ = []
 
 run :: T -> T
@@ -309,6 +376,6 @@ run t
     where
         gm = buildGamma t
         gm' = letAllocGamma t gm
-        t_type = typeCheck gm' t
+        t_type = (typeCheck gm' t)
 
 
