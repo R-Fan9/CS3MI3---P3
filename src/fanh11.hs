@@ -362,10 +362,16 @@ letAllocGamma (Let x (Alloc t) t2) gm = gm++[(x, Ref (fromJust (typeCheck gm t))
 letAllocGamma _ gm = gm
 
 buildGamma :: T -> Gamma
-buildGamma (Val (L x tp t1)) = [(x, tp)]++buildGamma t1
+buildGamma (If t1 t2 t3) = buildGamma t1 `union` buildGamma t2 `union` buildGamma t3
+buildGamma (Succ t1) = buildGamma t1
+buildGamma (Pred t1) = buildGamma t1
+buildGamma (IsZero t1) = buildGamma t1
+buildGamma (Val (L x tp t1)) = [(x, tp)] `union` buildGamma t1
 buildGamma (App t1 t2) = buildGamma t1 `union` buildGamma t2
 buildGamma (Let x t1 t2) = buildGamma t1 `union` buildGamma t2
 buildGamma (Seq t1 t2) = buildGamma t1 `union` buildGamma t2
+buildGamma (Alloc t1) = buildGamma t1
+buildGamma (DeRef t1) = buildGamma t1
 buildGamma (Assign t1 t2) = buildGamma t1 `union` buildGamma t2
 buildGamma _ = []
 
